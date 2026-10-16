@@ -1,11 +1,17 @@
 # myCobot 280 Pi
 
+**▶ Try the control app in your browser: https://aarivakumar.github.io/mycobot-280-control/**
+(online demo with a simulated arm. To drive a real robot, run it on your computer, see below.)
+
 The myCobot 280 Pi has a Raspberry Pi built into its base. The Pi talks to the arm's
-controller over `/dev/ttyAMA0` at 1,000,000 baud. There are two ways to control it:
+controller over `/dev/ttyAMA0` at 1,000,000 baud. There are three ways to control it:
 
 - **On the Pi itself.** Plug in a monitor, keyboard and mouse, or SSH in. Scripts use the serial port directly.
-- **From this PC over the network.** `pi/server.py` runs on the Pi as a TCP bridge
+- **From this PC over Wi-Fi.** `pi/server.py` runs on the Pi as a TCP bridge
   (port 9000). Scripts on this PC connect with `MyCobot280Socket`.
+- **From this PC with a cable.** An Ethernet cable from the robot's base to this PC
+  (or a USB-to-Ethernet adapter). It uses the same bridge, with no Wi-Fi needed. See
+  [Connect with a cable](#connect-with-a-cable).
 
 `robot.py` handles both. If `MYCOBOT_IP` is set (or `--ip` is passed), it uses the network.
 On the Pi, it uses the serial port.
@@ -15,10 +21,13 @@ mycobot/
 ├── robot.py                  shared connect() helper
 ├── requirements.txt          pymycobot 4.0.7, pyserial, flask
 ├── start.sh                  launches the control app
+├── cable_setup.sh            one-time setup for an Ethernet cable to the robot (Linux)
+├── index.html                GitHub Pages entry, forwards to webapp/static/
 ├── webapp/                   control app: connect, joystick, blocks
 │   ├── app.py                Flask server, holds the robot connection
 │   ├── mock_robot.py         simulated arm for --mock
-│   └── static/               index.html, app.js (connect/joystick), blocks.js, vendor/blockly
+│   └── static/               index.html, app.js (connect/joystick), blocks.js,
+│                             demo-backend.js (simulated arm for the online demo), vendor/blockly
 ├── examples/
 │   ├── test_connection.py    read-only check, turns the LED green
 │   ├── basic_motion.py       moves through a few poses (needs clear space)
@@ -121,6 +130,38 @@ Notes:
 - Targets are clamped to the joint limits below and to the arm's reach. Cartesian moves
   the arm can't reach are ignored by the controller.
 
+## Connect with a cable
+
+The arm's controller is wired to the Raspberry Pi inside the base, so a "cable connection"
+means a **network (Ethernet) cable** from the robot's base to your computer. If your
+computer has no Ethernet port, a USB-to-Ethernet adapter works the same way. This is
+handy when there's no Wi-Fi, or for the very first setup (you can SSH in over the cable).
+
+The robot's bridge must still be installed once (step 2 above). You can do that over the
+cable too.
+
+**Linux (Ubuntu etc.)**
+
+```bash
+cd ~/mycobot
+bash cable_setup.sh       # one time: shares a network on the wired port, then finds the robot
+./start.sh                # choose "With a cable" → Find my robot on the cable
+```
+
+`cable_setup.sh` creates a NetworkManager connection called `mycobot-cable`, so the robot
+gets an address like `10.42.0.x`. It reconnects automatically next time. To remove it:
+`bash cable_setup.sh --undo`. If you have several wired ports, name one:
+`bash cable_setup.sh enx00e04c...`.
+
+**macOS:** System Settings → General → Sharing → Internet Sharing. Share your Wi-Fi
+connection to the Ethernet/USB adapter port, then turn it on. The robot gets a `192.168.2.x`
+address.
+**Windows:** Settings → Network → your Wi-Fi adapter → Properties → Sharing → allow other
+users to connect, choosing the Ethernet adapter. The robot gets a `192.168.137.x` address.
+
+Then use **With a cable → Find my robot on the cable** in the app. The search covers every
+network port on your computer, and cable results are marked 🔌.
+
 ## Writing your own scripts
 
 ```python
@@ -146,6 +187,8 @@ Approximate joint limits in degrees: J1 ±168, J2 ±135, J3 ±150, J4 ±145, J5 
 |---|---|
 | `ConnectionRefusedError` | The bridge isn't running: `systemctl status mycobot-server` on the Pi |
 | Timeout / no route | Wrong IP address, or the PC and Pi are on different networks |
+| "No cable link yet" | Cable not in at both ends, robot off, or (Linux) `cable_setup.sh` not run yet |
+| Cable is up but robot not found | Wait a minute after power-on and search again. Check the bridge is installed (`systemctl status mycobot-server` over SSH) |
 | `get_angles()` returns `-1`, `None` or `[]` | The arm isn't powered (12V), or another program has the serial port |
 | Arm doesn't move | Run `mc.power_on()`. Check the servo cables. Update the ATOM firmware with myStudio. |
 | Control app says "arm not answering" | The bridge is up but the arm isn't answering: check 12V power, then press Power on |

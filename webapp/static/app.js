@@ -111,6 +111,26 @@ function setConnectMode(mode) {
   connectMode = mode;
   document.querySelectorAll(".mode").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
   document.querySelectorAll(".mode-panel").forEach((p) => (p.hidden = p.dataset.panel !== mode));
+  if (mode === "cable") checkCable();
+}
+
+// Shows whether this computer has a wired network link up (cable or USB adapter).
+async function checkCable() {
+  const el = $("cable-status");
+  try {
+    const data = await api("/api/network", undefined, "GET", true);
+    const wired = data.interfaces.filter((i) => i.wired);
+    if (wired.length) {
+      el.className = "cable-status ok";
+      el.textContent = "🔌 Cable connected on " + wired.map((i) => `${i.name} (this computer is ${i.ip})`).join(", ");
+    } else {
+      el.className = "cable-status";
+      el.textContent = "No cable link yet. Plug the cable in at both ends (robot switched on), then run cable_setup.sh once.";
+    }
+  } catch (e) {
+    el.className = "cable-status";
+    el.textContent = e.message;
+  }
 }
 
 function step(text, cls) {
@@ -127,16 +147,18 @@ async function doConnect() {
   steps.hidden = false;
   const btn = $("connect");
   btn.disabled = true;
-  const ip = $("ip").value.trim();
+  const ipBox = connectMode === "cable" ? $("ip-cable") : $("ip");
+  const ip = ipBox.value.trim();
   const port = Number($("port").value) || 9000;
-  const label = connectMode === "network" ? `Reaching the robot at ${ip}:${port}` :
+  const label = connectMode === "network" || connectMode === "cable" ? `Reaching the robot at ${ip}:${port}` :
     connectMode === "serial" ? "Opening /dev/ttyAMA0" : "Starting the simulated arm";
   const s1 = step(label, "busy");
   try {
-    if (connectMode === "network" && !ip) throw new Error("Type the robot's IP address, or use Find my robot.");
-    const data = await api("/api/connect", { mode: connectMode, ip, port }, "POST", true);
+    const viaNet = connectMode === "network" || connectMode === "cable";
+    if (viaNet && !ip) throw new Error(connectMode === "cable" ? "Press Find my robot on the cable first." : "Type the robot's IP address, or use Find my robot.");
+    const data = await api("/api/connect", { mode: viaNet ? "network" : connectMode, ip, port }, "POST", true);
     s1.className = "ok";
-    if (connectMode === "network") { store("ip", ip); store("port", String(port)); }
+    if (viaNet) { store(connectMode === "cable" ? "ip-cable" : "ip", ip); store("port", String(port)); store("connect-mode", connectMode); }
     const st = data.state;
     if (st.version !== null && st.version !== undefined && st.version !== -1) {
       step("Arm controller replied (firmware " + st.version + ")", "ok");
@@ -155,29 +177,44 @@ async function doConnect() {
   }
 }
 
-async function doScan() {
-  const btn = $("scan");
-  const list = $("scan-results");
+async function doScan(cable) {
+  const btn = cable ? $("scan-cable") : $("scan");
+  const list = cable ? $("scan-results-cable") : $("scan-results");
+  const label = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Searching… (a few seconds)";
   list.innerHTML = "";
   try {
     const data = await api("/api/scan", { port: Number($("port").value) || 9000 });
-    if (!data.found.length) {
-      list.innerHTML = `<li class="none">No robot bridge found on ${data.subnets.map((n) => n + ".x").join(", ") || "this network"}.
-        Make sure the Pi is on and the bridge service is running, or type the IP.</li>`;
+    let found = data.found;
+    if (cable && found.some((f) => f.wired)) found = found.filter((f) => f.wired);
+    if (!found.length) {
+      const nets = data.interfaces.map((i) => i.name + " " + i.ip).join(", ") || "none";
+      const li = document.createElement("li");
+      li.className = "none";
+      li.textContent = cable
+        ? `No robot found. Networks on this computer: ${nets}. Is the cable in, the robot on, and cable_setup.sh run once?`
+        : `No robot bridge found (searched: ${nets}). Make sure the Pi is on and the bridge service is running, or type the IP.`;
+      list.appendChild(li);
     }
-    data.found.forEach((ip) => {
+    found.forEach((f) => {
       const li = document.createElement("li");
       const b = document.createElement("button");
-      b.textContent = "🤖 " + ip + "  (tap to use)";
-      b.onclick = () => { $("ip").value = ip; doConnect(); };
+      const how = f.wired ? "🔌 cable" : f.wired === false ? "📶 Wi-Fi" : "network";
+      b.innerHTML = `🤖 <strong></strong> <small></small>`;
+      b.querySelector("strong").textContent = f.ip;
+      b.querySelector("small").textContent = `${how}${f.iface ? " · " + f.iface : ""}${f.hostname ? " · " + f.hostname : ""} · tap to connect`;
+      b.onclick = () => {
+        if (f.wired && !cable) setConnectMode("cable");
+        (connectMode === "cable" ? $("ip-cable") : $("ip")).value = f.ip;
+        doConnect();
+      };
       li.appendChild(b);
       list.appendChild(li);
     });
   } catch (e) { /* toast already shown */ }
   btn.disabled = false;
-  btn.textContent = "Find my robot on this network";
+  btn.textContent = label;
 }
 
 // ---------- stop ----------
@@ -378,7 +415,9 @@ function initUi() {
 
   $("connect").onclick = doConnect;
   $("ip").addEventListener("keydown", (e) => { if (e.key === "Enter") doConnect(); });
-  $("scan").onclick = doScan;
+  $("scan").onclick = () => doScan(false);
+  $("scan-cable").onclick = () => doScan(true);
+  $("ip-cable").addEventListener("keydown", (e) => { if (e.key === "Enter") doConnect(); });
   $("disconnect").onclick = async () => { await api("/api/disconnect", {}).catch(() => {}); showScreen(false); };
   $("stop").onclick = stopAll;
   $("speed").oninput = () => { $("speed-val").textContent = $("speed").value; store("speed", $("speed").value); };
@@ -410,7 +449,14 @@ async function init() {
   // On the robot's own Pi, the bridge is local.
   $("ip").value = config.default_ip || recall("ip") || (config.serial_available ? "127.0.0.1" : "");
   $("port").value = recall("port") || config.default_port;
+  $("ip-cable").value = recall("ip-cable") || "";
   if (!config.serial_available) $("mode-serial").hidden = true;
+  if (window.DEMO_MODE) {
+    $("demo-banner").hidden = false;
+    setConnectMode("mock");
+  } else if (recall("connect-mode") === "cable") {
+    setConnectMode("cable");
+  }
   const s = await (await fetch("/api/state")).json();
   render(s);
   showScreen(s.connected);

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <title>myCobot Control</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦾</text></svg>">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
@@ -14,9 +14,15 @@
   <div class="connect-card">
     <h1>myCobot 280 Pi</h1>
     <p class="sub">Connect to your robot to start.</p>
+    <div id="demo-banner" class="demo-banner" hidden>
+      <strong>Online demo</strong>: this page runs a simulated arm in your browser.
+      To control your real myCobot, download the app and run <code>./start.sh</code> on a computer
+      connected to the robot. <a href="https://github.com/aarivakumar/mycobot-280-control#readme" target="_blank" rel="noopener">How to set it up</a>
+    </div>
 
     <div class="modes" role="tablist">
       <button class="mode active" data-mode="network" role="tab">Over Wi-Fi</button>
+      <button class="mode" data-mode="cable" role="tab">With a cable</button>
       <button class="mode" data-mode="serial" role="tab" id="mode-serial">On this Pi</button>
       <button class="mode" data-mode="mock" role="tab">Demo (no robot)</button>
     </div>
@@ -29,7 +35,7 @@
         </div>
       </label>
       <button id="scan" class="secondary">Find my robot on this network</button>
-      <ul id="scan-results"></ul>
+      <ul id="scan-results" class="scan-results"></ul>
       <details class="help">
         <summary>Before connecting</summary>
         <ol>
@@ -38,6 +44,21 @@
           <li>The bridge is installed on the Pi (one time): <code>bash setup_pi.sh --service</code></li>
         </ol>
       </details>
+    </div>
+    <div class="mode-panel" data-panel="cable" hidden>
+      <div id="cable-status" class="cable-status">Checking for a cable…</div>
+      <ol class="cable-steps">
+        <li>Plug a network (Ethernet) cable from the robot's base into this computer.
+          No Ethernet port? Use a USB-to-Ethernet adapter.</li>
+        <li>First time only, on Linux run <code>bash cable_setup.sh</code> in the mycobot folder.
+          It gives the robot an address over the cable. (Mac/Windows: see the README.)</li>
+        <li>Press the button below.</li>
+      </ol>
+      <button id="scan-cable" class="secondary">Find my robot on the cable</button>
+      <ul id="scan-results-cable" class="scan-results"></ul>
+      <label>Robot IP address
+        <div class="row"><input id="ip-cable" placeholder="filled in by Find, e.g. 10.42.0.23" inputmode="decimal" autocomplete="off"></div>
+      </label>
     </div>
     <div class="mode-panel" data-panel="serial" hidden>
       <p>Talk to the arm directly over <code>/dev/ttyAMA0</code>. Stop the bridge service first
@@ -149,11 +170,12 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="/static/vendor/blockly/blockly_compressed.js"></script>
-<script src="/static/vendor/blockly/blocks_compressed.js"></script>
-<script src="/static/vendor/blockly/javascript_compressed.js"></script>
-<script src="/static/vendor/blockly/en.js"></script>
-<script src="/static/app.js"></script>
-<script src="/static/blocks.js"></script>
+<script src="vendor/blockly/blockly_compressed.js"></script>
+<script src="vendor/blockly/blocks_compressed.js"></script>
+<script src="vendor/blockly/javascript_compressed.js"></script>
+<script src="vendor/blockly/en.js"></script>
+<script src="demo-backend.js"></script>
+<script src="app.js"></script>
+<script src="blocks.js"></script>
 </body>
 </html>

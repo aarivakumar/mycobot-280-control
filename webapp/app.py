@@ -21,6 +21,7 @@ import math
 import os
 import re
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -267,22 +268,94 @@ def limit_reach(c):
         c[0], c[1], c[2] = c[0] * f, c[1] * f, SHOULDER_Z + dz * f
 
 
-def local_subnets():
-    """/24 prefixes of this machine's IPv4 addresses, e.g. ["192.168.1"]."""
-    ips = set()
+# Interfaces that never lead to the robot (containers, VPNs, loopback).
+VIRTUAL_IFACES = ("lo", "docker", "br-", "veth", "virbr", "tailscale", "tun", "tap", "wg", "zt", "utun", "awdl", "llw")
+ROBOT_HOSTNAMES = ("mycobot.local", "er.local", "raspberrypi.local", "ubuntu.local", "pi.local")
+
+
+def _run(cmd):
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("10.255.255.255", 1))  # no packet is sent; just picks the LAN interface
-        ips.add(s.getsockname()[0])
-        s.close()
-    except OSError:
-        pass
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ips.add(info[4][0])
-    except OSError:
-        pass
-    return sorted({ip.rsplit(".", 1)[0] for ip in ips if not ip.startswith("127.")})
+        return subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.DEVNULL, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def is_wired(name):
+    """True for an Ethernet port (incl. USB adapters), False for Wi-Fi, None if unknown."""
+    if os.path.isdir("/sys/class/net/%s" % name):
+        return not os.path.exists("/sys/class/net/%s/wireless" % name) and not name.startswith("wl")
+    return None
+
+
+def interfaces():
+    """This machine's usable IPv4 interfaces: [{"name", "ip", "wired"}]."""
+    found = []
+    text = _run(["ip", "-4", "-o", "addr", "show"])
+    for m in re.finditer(r"^\d+:\s+(\S+)\s+inet\s+([\d.]+)/(\d+)", text, re.M):
+        found.append((m.group(1), m.group(2), int(m.group(3))))
+    if not found:  # macOS / BSD
+        name = None
+        for line in _run(["ifconfig"]).splitlines():
+            if line and not line[0].isspace():
+                name = line.split(":")[0]
+            m = re.search(r"inet ([\d.]+) netmask 0x([0-9a-f]+)", line)
+            if m and name:
+                found.append((name, m.group(1), bin(int(m.group(2), 16)).count("1")))
+    if not found:  # anything else: at least the interface with the default route
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("10.255.255.255", 1))  # no packet is sent; just picks the LAN interface
+            found.append(("?", s.getsockname()[0], 24))
+            s.close()
+        except OSError:
+            pass
+    return [{"name": n, "ip": ip, "prefix": plen, "wired": is_wired(n)} for n, ip, plen in found
+            if not n.startswith(VIRTUAL_IFACES) and not ip.startswith("127.") and plen < 32]
+
+
+def neighbours():
+    """IPs this machine has recently talked to (ARP/neighbour table): {ip: interface}."""
+    out = {}
+    for line in _run(["ip", "-4", "neigh"]).splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and "FAILED" not in line and "INCOMPLETE" not in line:
+            out[parts[0]] = parts[2]
+    if not out:
+        for m in re.finditer(r"\(?([\d.]+)\)?\s.*?(?:on\s+(\S+))?$", _run(["arp", "-a"]), re.M):
+            out[m.group(1)] = m.group(2) or "?"
+    return out
+
+
+def resolve_hostnames():
+    """Try the usual Pi hostnames over mDNS. Returns {ip: hostname}."""
+    def lookup(host):
+        try:
+            return host, socket.gethostbyname(host)
+        except OSError:
+            return host, None
+    pool = ThreadPoolExecutor(max_workers=len(ROBOT_HOSTNAMES))
+    futures = [pool.submit(lookup, h) for h in ROBOT_HOSTNAMES]
+    pool.shutdown(wait=False)  # don't wait for slow lookups past the deadline
+    deadline = time.time() + 2.0
+    out = {}
+    for f in futures:
+        try:
+            host, ip = f.result(timeout=max(0.0, deadline - time.time()))
+        except Exception:
+            continue
+        if ip and not ip.startswith("127."):
+            out[ip] = host
+    return out
+
+
+def iface_for(ip, ifaces):
+    """The local interface whose /24 (or link-local range) contains ip."""
+    for i in ifaces:
+        if ip.rsplit(".", 1)[0] == i["ip"].rsplit(".", 1)[0]:
+            return i
+        if ip.startswith("169.254.") and i["ip"].startswith("169.254."):
+            return i
+    return None
 
 
 def port_open(ip, port, timeout=0.5):
@@ -293,7 +366,7 @@ def port_open(ip, port, timeout=0.5):
         return False
 
 
-app = Flask(__name__, static_folder=os.path.join(HERE, "static"), static_url_path="/static")
+app = Flask(__name__, static_folder=os.path.join(HERE, "static"), static_url_path="")  # pages use relative paths, so the same files also work on GitHub Pages
 robot = Robot()
 jogger = Jogger(robot)
 
@@ -414,15 +487,39 @@ def jog_coord():
     return ok()
 
 
+@app.route("/api/network")
+def network():
+    """Local interfaces, so the page can say whether a cable is plugged in."""
+    return jsonify({"ok": True, "interfaces": interfaces()})
+
+
 @app.route("/api/scan", methods=["POST"])
 def scan():
-    """Look for the Pi bridge on this machine's local network(s)."""
+    """Look for the Pi bridge on every local network: Wi-Fi, Ethernet cable, USB adapters."""
     port = int(body().get("port", DEFAULT_NET_PORT))
-    subnets = local_subnets()
-    hosts = ["%s.%d" % (net, i) for net in subnets for i in range(1, 255)]
+    ifaces = interfaces()
+    candidates = {}
+    for i in ifaces:
+        if i["ip"].startswith("169.254."):
+            continue  # link-local is a /16; rely on neighbours and mDNS there
+        net = i["ip"].rsplit(".", 1)[0]
+        for n in range(1, 255):
+            candidates.setdefault("%s.%d" % (net, n), None)
+    for ip in neighbours():
+        candidates[ip] = None
+    names = resolve_hostnames()
+    for ip in names:
+        candidates[ip] = None
+    hosts = [h for h in candidates if h not in [i["ip"] for i in ifaces]]
     with ThreadPoolExecutor(max_workers=128) as pool:
         hits = [h for h, up in zip(hosts, pool.map(lambda h: port_open(h, port), hosts)) if up]
-    return jsonify({"ok": True, "found": hits, "subnets": subnets, "port": port})
+    found = []
+    for ip in hits:
+        i = iface_for(ip, ifaces)
+        found.append({"ip": ip, "iface": i["name"] if i else None,
+                      "wired": i["wired"] if i else None, "hostname": names.get(ip)})
+    found.sort(key=lambda f: (f["wired"] is not True, f["ip"]))  # cable first
+    return jsonify({"ok": True, "found": found, "interfaces": ifaces, "port": port})
 
 
 @app.route("/api/jog", methods=["POST"])
