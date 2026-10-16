@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>myCobot Control</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦾</text></svg>">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ============ 1. CONNECT ============ -->
+<section id="connect-screen" class="screen">
+  <div class="connect-card">
+    <h1>myCobot 280 Pi</h1>
+    <p class="sub">Connect to your robot to start.</p>
+
+    <div class="modes" role="tablist">
+      <button class="mode active" data-mode="network" role="tab">Over Wi-Fi</button>
+      <button class="mode" data-mode="serial" role="tab" id="mode-serial">On this Pi</button>
+      <button class="mode" data-mode="mock" role="tab">Demo (no robot)</button>
+    </div>
+
+    <div class="mode-panel" data-panel="network">
+      <label>Robot IP address
+        <div class="row">
+          <input id="ip" placeholder="e.g. 192.168.1.42" inputmode="decimal" autocomplete="off">
+          <input id="port" type="number" value="9000" class="port" aria-label="Port">
+        </div>
+      </label>
+      <button id="scan" class="secondary">Find my robot on this network</button>
+      <ul id="scan-results"></ul>
+      <details class="help">
+        <summary>Before connecting</summary>
+        <ol>
+          <li>The robot is plugged into 12&nbsp;V power and switched on.</li>
+          <li>The robot's Pi is on the same Wi-Fi as this device. Run <code>hostname -I</code> on the Pi to see its IP.</li>
+          <li>The bridge is installed on the Pi (one time): <code>bash setup_pi.sh --service</code></li>
+        </ol>
+      </details>
+    </div>
+    <div class="mode-panel" data-panel="serial" hidden>
+      <p>Talk to the arm directly over <code>/dev/ttyAMA0</code>. Stop the bridge service first
+        (<code>sudo systemctl stop mycobot-server</code>), or use "Over Wi-Fi" with IP <code>127.0.0.1</code>.</p>
+    </div>
+    <div class="mode-panel" data-panel="mock" hidden>
+      <p>A simulated arm, so you can try the joystick and blocks without hardware.</p>
+    </div>
+
+    <button id="connect" class="primary big">Connect</button>
+    <ol id="steps" hidden></ol>
+  </div>
+</section>
+
+<!-- ============ 2. CONTROL ============ -->
+<section id="control-screen" class="screen" hidden>
+  <header class="topbar">
+    <div class="who">
+      <span id="dot" class="dot"></span>
+      <span id="target">—</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="joystick" role="tab">🕹 Joystick</button>
+      <button class="tab" data-tab="blocks" role="tab">🧩 Blocks</button>
+    </nav>
+    <label class="speed">Speed <input id="speed" type="range" min="5" max="100" value="40"><span id="speed-val">40</span></label>
+    <button id="disconnect" class="ghost">Disconnect</button>
+    <button id="stop" class="stop" title="Stop the arm (Esc)">STOP</button>
+  </header>
+  <div id="warn" class="warn" hidden></div>
+
+  <!-- Joystick tab -->
+  <main id="tab-joystick" class="tab-body">
+    <div class="jog-area">
+      <div class="jog-mode">
+        <button class="seg active" data-jogmode="coord">Move tool (X Y Z)</button>
+        <button class="seg" data-jogmode="joint">Move joints</button>
+        <span id="pad-status" class="pad-status">🎮 No gamepad</span>
+      </div>
+
+      <div class="sticks">
+        <div class="stick-wrap">
+          <div class="stick" id="stick-left"><div class="knob"></div></div>
+          <div class="stick-label" id="label-left">Forward / back · Left / right</div>
+        </div>
+        <div class="stick-wrap">
+          <div class="stick" id="stick-right"><div class="knob"></div></div>
+          <div class="stick-label" id="label-right">Up / down · Twist</div>
+        </div>
+      </div>
+
+      <div class="hold-row" id="joint-holds" hidden>
+        <span>J5</span><button class="hold" data-axis="4" data-dir="-1">◀</button><button class="hold" data-axis="4" data-dir="1">▶</button>
+        <span>J6</span><button class="hold" data-axis="5" data-dir="-1">◀</button><button class="hold" data-axis="5" data-dir="1">▶</button>
+      </div>
+
+      <div class="actions">
+        <button data-act="home">⌂ Home</button>
+        <button data-act="grip-open">✋ Open gripper</button>
+        <button data-act="grip-close">✊ Close gripper</button>
+        <button data-act="relax" title="Servos go limp so you can pose the arm by hand. Hold the arm first!">Relax servos</button>
+        <button data-act="lock">Lock servos</button>
+        <button data-act="power-on">Power on</button>
+        <label class="led">LED <input type="color" id="led" value="#00ff00"></label>
+      </div>
+      <p class="hint">Keyboard: <kbd>W</kbd><kbd>S</kbd> forward/back · <kbd>A</kbd><kbd>D</kbd> left/right · <kbd>R</kbd><kbd>F</kbd> up/down · <kbd>Q</kbd><kbd>E</kbd> twist · <kbd>Esc</kbd> stop.
+        Gamepad: sticks move, A/B gripper, X switches mode, Y home, Start stops.</p>
+    </div>
+
+    <aside class="side">
+      <h3>Live position</h3>
+      <table class="readout">
+        <tr><th>J1</th><td id="a0">—</td><th>X</th><td id="c0">—</td></tr>
+        <tr><th>J2</th><td id="a1">—</td><th>Y</th><td id="c1">—</td></tr>
+        <tr><th>J3</th><td id="a2">—</td><th>Z</th><td id="c2">—</td></tr>
+        <tr><th>J4</th><td id="a3">—</td><th>RX</th><td id="c3">—</td></tr>
+        <tr><th>J5</th><td id="a4">—</td><th>RY</th><td id="c4">—</td></tr>
+        <tr><th>J6</th><td id="a5">—</td><th>RZ</th><td id="c5">—</td></tr>
+      </table>
+      <h3>Saved poses</h3>
+      <div class="row"><input id="pose-name" placeholder="Name this pose"><button id="pose-save">Save</button></div>
+      <ul id="poses"></ul>
+      <p class="hint">Saved poses also show up in the "go to pose" block.</p>
+    </aside>
+  </main>
+
+  <!-- Blocks tab -->
+  <main id="tab-blocks" class="tab-body" hidden>
+    <div class="blocks-bar">
+      <button id="run" class="primary">▶ Run</button>
+      <button id="halt" class="danger" disabled>■ Stop</button>
+      <span class="sep"></span>
+      <input id="prog-name" value="My program" aria-label="Program name">
+      <button id="prog-save">Save</button>
+      <select id="prog-list" aria-label="Open program"><option value="">Open…</option></select>
+      <button id="prog-new" class="ghost">New</button>
+    </div>
+    <div class="blocks-main">
+      <div id="blockly"></div>
+      <aside class="console">
+        <h3>Output</h3>
+        <ol id="log"></ol>
+        <p class="hint">Tip: right-click a "move joints" or "move tool" block and pick
+          <em>Fill in current position</em> to copy where the arm is now.</p>
+      </aside>
+    </div>
+  </main>
+</section>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/static/vendor/blockly/blockly_compressed.js"></script>
+<script src="/static/vendor/blockly/blocks_compressed.js"></script>
+<script src="/static/vendor/blockly/javascript_compressed.js"></script>
+<script src="/static/vendor/blockly/en.js"></script>
+<script src="/static/app.js"></script>
+<script src="/static/blocks.js"></script>
+</body>
+</html>

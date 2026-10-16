@@ -1,0 +1,13 @@
+[Unit]
+Description=myCobot 280 TCP->serial bridge (port 9000)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=__USER__
+ExecStart=/usr/bin/python3 __DIR__/server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
